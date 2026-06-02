@@ -1590,6 +1590,7 @@ export function extractUserEvents(message: string): SessionEvent[] {
   try {
     const events: SessionEvent[] = [];
 
+    events.push(...extractUserPlan(message));
     events.push(...extractUserDecision(message));
     events.push(...extractRole(message));
     events.push(...extractIntent(message));
@@ -1601,4 +1602,48 @@ export function extractUserEvents(message: string): SessionEvent[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * UserPromptSubmit-driven `/plan` slash detector.
+ *
+ * Compensates for Claude Code Bug #15660: programmatic EnterPlanMode tool
+ * calls fire PostToolUse, but the `/plan` slash command and Shift+Tab do
+ * NOT. Shift+Tab is unrecoverable from the OSS bridge without an upstream
+ * SDK change; this detector handles the slash case.
+ *
+ * Algorithmic (no regex): tolerate leading whitespace, require lowercase
+ * "/plan", reject longer slashes like "/plans" via the next-char check.
+ */
+function extractUserPlan(message: string): SessionEvent[] {
+  if (typeof message !== "string" || message.length === 0) return [];
+
+  let i = 0;
+  while (i < message.length) {
+    const c = message.charCodeAt(i);
+    if (c !== 32 && c !== 9) break;
+    i++;
+  }
+
+  if (i + 5 > message.length) return [];
+  if (message.slice(i, i + 5) !== "/plan") return [];
+
+  if (i + 5 < message.length) {
+    const next = message.charCodeAt(i + 5);
+    const isWordBoundary =
+      next === 32 || next === 9 || next === 10 || next === 13;
+    if (!isWordBoundary) return [];
+  }
+
+  const arg = message.slice(i + 5).trim();
+  const detail = arg.length > 0
+    ? `plan via /plan slash: ${arg.slice(0, 120)}`
+    : "plan via /plan slash";
+
+  return [{
+    type: "plan_enter",
+    category: "plan",
+    data: safeString(detail),
+    priority: 2,
+  }];
 }
