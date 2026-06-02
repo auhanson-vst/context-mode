@@ -1340,12 +1340,14 @@ function extractFileReadMetadata(input: HookInput): SessionEvent[] {
 
 /**
  * Per-model USD price table — Anthropic public list pricing, $/MTok.
- * Verified against platform.claude.com/docs/en/about-claude/pricing
- * (2026-06 cache: 5-min cache_write = 1.25× input, cache_read = 0.10× input).
+ * Verified against platform.claude.com/docs/en/about-claude/pricing,
+ * cloudzero.com, finout.io 2026-06 (cache: 5-min cache_write = 1.25× input,
+ * cache_read = 0.10× input). Fast-mode variants (e.g. opus-4-8-fast at
+ * $10/$50) are intentionally NOT mapped — they ship as separate model
+ * ids and would dilute the standard-tier dashboards if blended here.
  *
- * NOTE: 16-oss-verify-gap-prd Gap #1 quoted Opus at $15/$75 — that is the
- * old Opus 4 (non-4.7) rate. Opus 4.7 ships at $5/$25 (CloudZero, finout.io,
- * platform.claude.com all confirm).
+ * NOTE: 16-oss-verify-gap-prd Gap #1 quoted Opus at $15/$75 — that is
+ * the prior Opus 4 (non-4.7) rate. Opus 4.7 and 4.8 ship at $5/$25.
  */
 const MODEL_PRICING_USD_PER_MTOK: Record<string, {
   input: number;
@@ -1353,6 +1355,7 @@ const MODEL_PRICING_USD_PER_MTOK: Record<string, {
   cache_write: number;
   cache_read: number;
 }> = {
+  "claude-opus-4-8":   { input: 5.00, output: 25.00, cache_write: 6.25, cache_read: 0.50 },
   "claude-opus-4-7":   { input: 5.00, output: 25.00, cache_write: 6.25, cache_read: 0.50 },
   "claude-sonnet-4-6": { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 },
   "claude-haiku-4-5":  { input: 1.00, output:  5.00, cache_write: 1.25, cache_read: 0.10 },
@@ -1365,9 +1368,14 @@ function resolveModelKey(input: HookInput, parsedResp: Record<string, unknown>):
     (input as unknown as Record<string, unknown>).model,
     parsedResp.model,
   ];
+  const keys = Object.keys(MODEL_PRICING_USD_PER_MTOK).filter((k) => k !== "default");
   for (const c of candidates) {
-    if (typeof c === "string" && c.length > 0) {
-      return c in MODEL_PRICING_USD_PER_MTOK ? c : "default";
+    if (typeof c !== "string" || c.length === 0) continue;
+    if (c in MODEL_PRICING_USD_PER_MTOK) return c;
+    // Prefix match for date-suffixed model ids
+    // (e.g. claude-haiku-4-5-20251001 → claude-haiku-4-5)
+    for (const key of keys) {
+      if (c.startsWith(key)) return key;
     }
   }
   return "default";

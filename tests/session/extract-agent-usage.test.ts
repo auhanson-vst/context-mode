@@ -223,6 +223,38 @@ describe("extractAgentUsage — Issue #4 AgentOutput.usage capture", () => {
     expect(events[0].data).toMatch(/cost_usd:0\.0105/);
   });
 
+  test("cost_usd: Opus 4.8 priced at same standard rate as Opus 4.7", () => {
+    const opus48 = extractEvents({
+      tool_name: "Task",
+      tool_input: { model: "claude-opus-4-8" },
+      tool_response: JSON.stringify({
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      }),
+    }).filter((e) => e.type === "agent_usage");
+    const opus47 = extractEvents({
+      tool_name: "Task",
+      tool_input: { model: "claude-opus-4-7" },
+      tool_response: JSON.stringify({
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      }),
+    }).filter((e) => e.type === "agent_usage");
+    const c48 = opus48[0].data.match(/cost_usd:(\d+\.\d+)/)![1];
+    const c47 = opus47[0].data.match(/cost_usd:(\d+\.\d+)/)![1];
+    expect(c48).toBe(c47);
+  });
+
+  test("cost_usd: date-suffixed model id (haiku-4-5-20251001) resolves via prefix", () => {
+    const events = extractEvents({
+      tool_name: "Task",
+      tool_input: { model: "claude-haiku-4-5-20251001" },
+      tool_response: JSON.stringify({
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      }),
+    }).filter((e) => e.type === "agent_usage");
+    // Haiku rate: 1000*1 + 500*5 = 3500 / 1_000_000 = 0.0035
+    expect(events[0].data).toMatch(/cost_usd:0\.0035/);
+  });
+
   test("cost_usd: no model + token counts → still computes with default pricing", () => {
     const events = extractEvents({
       tool_name: "Task",
