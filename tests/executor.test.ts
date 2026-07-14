@@ -887,6 +887,26 @@ describe("Timeout Handling", () => {
     assert.equal(r.stdout.trim(), "done");
   });
 
+  // Issue #936 root cause — a command that leaves a backgrounded descendant
+  // holding the inherited stdout/stderr pipe must NOT hang. Resolving on
+  // `close` waited for the lingering child to exit (indefinitely for a
+  // daemon); resolving on `exit` + flush grace returns promptly with the
+  // direct child's output. This test would hang (timeout) under the old code.
+  test("Shell: no timeout — command leaving a lingering child returns promptly (#936)", async () => {
+    if (process.platform === "win32") return; // POSIX-shell backgrounding
+    const t0 = Date.now();
+    const r = await executor.execute({
+      language: "shell",
+      // `sleep 30 &` inherits the stdout pipe and outlives the parent shell.
+      code: "sleep 30 & echo finished-work",
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(r.timedOut, false);
+    assert.equal(r.stdout.trim(), "finished-work");
+    // Must return in ~grace time, not wait ~30s on the backgrounded sleep.
+    assert.ok(elapsed < 5000, `expected prompt return, took ${elapsed}ms`);
+  });
+
   test("JS: infinite loop leaves no orphaned process after kill", async () => {
     // Spawn a process that writes its PID then loops forever
     const r = await executor.execute({

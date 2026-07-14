@@ -536,9 +536,43 @@ export class PolyglotExecutor {
         }
       });
 
-      proc.on("close", (exitCode) => {
+      // Grace window after `exit` to let any final buffered chunks from the
+      // (now-dead) direct child drain before we finalize. `close` normally
+      // arrives within ~1ms of `exit`, clearing this and finalizing with zero
+      // added latency; the grace only applies when `close` is delayed.
+      const EXIT_FLUSH_GRACE_MS = 150;
+      let exitGraceTimer: NodeJS.Timeout | undefined;
+
+      // Issue #936 root cause: resolving ONLY on `close` hangs indefinitely.
+      // Node fires `close` after the process exits AND every inherited
+      // stdout/stderr pipe is closed. If the script leaves a descendant that
+      // inherited fd 1/2 — a backgrounded job, daemon, dev server, watcher —
+      // that descendant holds the pipe open, `close` never fires, this promise
+      // never resolves, the MCP child never returns, and the bridge (which
+      // uses an infinite tools/call timeout) hangs until the user interrupts.
+      // Fix: finalize on `exit` (process is gone; direct child's work is done)
+      // after a short flush grace, and keep `close` as the immediate fast path.
+      const finalize = (exitCode: number | null, viaExit: boolean) => {
+        if (resolved) return; // already resolved (background timeout / prior event)
+        resolved = true;
         clearTimeout(timer);
-        if (resolved) return; // Already resolved by background timeout
+        clearTimeout(exitGraceTimer);
+
+        // Reached via `exit` because `close` is blocked on a lingering
+        // descendant holding the pipes. Detach so we neither wait on nor leak
+        // backpressure to it — output from the direct child is already captured.
+        if (viaExit) {
+          proc.unref();
+          if (proc.stdout) {
+            proc.stdout.removeAllListeners("data");
+            proc.stdout.on("data", () => {});
+          }
+          if (proc.stderr) {
+            proc.stderr.removeAllListeners("data");
+            proc.stderr.on("data", () => {});
+          }
+        }
+
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
         let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
 
@@ -546,20 +580,30 @@ export class PolyglotExecutor {
           rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB — process killed]`;
         }
 
-        const stdout = rawStdout;
-        const stderr = rawStderr;
-
         res({
-          stdout,
-          stderr,
+          stdout: rawStdout,
+          stderr: rawStderr,
           exitCode: timedOut ? 1 : (exitCode ?? 1),
           timedOut,
         });
+      };
+
+      // Fast path: all pipes closed and output complete — finalize now.
+      proc.on("close", (exitCode) => finalize(exitCode, false));
+
+      // Process has terminated. If `close` hasn't already finalized, a
+      // descendant is holding the pipes open; finalize after a short flush
+      // grace rather than waiting forever.
+      proc.on("exit", (exitCode) => {
+        if (resolved) return;
+        exitGraceTimer = setTimeout(() => finalize(exitCode, true), EXIT_FLUSH_GRACE_MS);
       });
 
       proc.on("error", (err) => {
         clearTimeout(timer);
+        clearTimeout(exitGraceTimer);
         if (resolved) return; // Already resolved by background timeout
+        resolved = true;
         res({
           stdout: "",
           stderr: err.message,
