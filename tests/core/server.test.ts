@@ -44,7 +44,7 @@ import {
   StorageDirectoryError,
 } from "../../src/session/db.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
-import { sanitizeSchemaForStrictClients, resolveExecTimeout, AGY_DEFAULT_EXEC_TIMEOUT_MS, CLAUDE_DEFAULT_EXEC_TIMEOUT_MS, REGISTERED_CTX_TOOLS } from "../../src/server.js";
+import { sanitizeSchemaForStrictClients, resolveExecTimeout, AGY_DEFAULT_EXEC_TIMEOUT_MS, CLAUDE_DEFAULT_EXEC_TIMEOUT_MS, PI_DEFAULT_EXEC_TIMEOUT_MS, REGISTERED_CTX_TOOLS } from "../../src/server.js";
 import { stripJsonComments, parseJsonc } from "../../src/util/jsonc.js";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -6630,6 +6630,7 @@ describe("resolveExecTimeout (agy default execution timeout)", () => {
   const savedOverride = process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS;
   const savedClaude = process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS;
   const savedGeneric = process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
+  const savedPi = process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS;
   afterEach(() => {
     if (savedPlatform === undefined) delete process.env.CONTEXT_MODE_PLATFORM;
     else process.env.CONTEXT_MODE_PLATFORM = savedPlatform;
@@ -6639,6 +6640,8 @@ describe("resolveExecTimeout (agy default execution timeout)", () => {
     else process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS = savedClaude;
     if (savedGeneric === undefined) delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
     else process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS = savedGeneric;
+    if (savedPi === undefined) delete process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS;
+    else process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS = savedPi;
   });
 
   test("passes an explicit timeout through on any platform", () => {
@@ -6667,14 +6670,27 @@ describe("resolveExecTimeout (agy default execution timeout)", () => {
     expect(resolveExecTimeout(undefined)).toBe(1500);
   });
 
-  test("leaves the timeout unbounded (undefined) on other hosts", () => {
+  test("applies the pi default under pi when no timeout is given (#936 follow-up)", () => {
     process.env.CONTEXT_MODE_PLATFORM = "pi";
+    delete process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS;
+    delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
+    expect(resolveExecTimeout(undefined)).toBe(PI_DEFAULT_EXEC_TIMEOUT_MS);
+  });
+
+  test("honors CONTEXT_MODE_PI_EXEC_TIMEOUT_MS override under pi", () => {
+    process.env.CONTEXT_MODE_PLATFORM = "pi";
+    process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS = "1234";
+    expect(resolveExecTimeout(undefined)).toBe(1234);
+  });
+
+  test("leaves the timeout unbounded (undefined) on other hosts", () => {
+    process.env.CONTEXT_MODE_PLATFORM = "opencode";
     delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
     expect(resolveExecTimeout(undefined)).toBeUndefined();
   });
 
   test("honors the generic CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS override on any host (#936)", () => {
-    process.env.CONTEXT_MODE_PLATFORM = "pi";
+    process.env.CONTEXT_MODE_PLATFORM = "opencode";
     process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS = "2500";
     expect(resolveExecTimeout(undefined)).toBe(2500);
   });
