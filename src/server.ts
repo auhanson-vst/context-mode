@@ -1491,14 +1491,73 @@ function truncateCommandForEcho(command: string): string {
  * run). A caller can still pass an explicit `timeout` to override on any host.
  */
 export const AGY_DEFAULT_EXEC_TIMEOUT_MS = 120_000;
+/**
+ * Default execution timeout (ms) applied under Claude Code (Issue #936).
+ * Claude Code's effective MCP tool timeout is enormous (MCP_TOOL_TIMEOUT
+ * defaults to ~28h) and, before v2.1.203, stdio MCP servers were exempt from
+ * the idle timeout entirely. That means a ctx_execute with no explicit timeout
+ * can hang the agent for tens of minutes/hours until the user interrupts. We
+ * therefore apply a bounded server-side default here. Tunable via
+ * CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS; long builds can still pass an explicit
+ * per-call `timeout` to override.
+ */
+export const CLAUDE_DEFAULT_EXEC_TIMEOUT_MS = 300_000;
+/**
+ * Default execution timeout (ms) applied under Pi (Issue #936 follow-up).
+ * Pi's MCP bridge deliberately calls `tools/call` with an INFINITE transport
+ * timeout (Issue #643 removed the old 120s ceiling to allow long builds), and
+ * defers bounding to "the executor layer / Pi cancel". But "Pi cancel" is
+ * manual user interruption — there is no automatic bound. So a ctx_execute
+ * with no explicit timeout can hang the agent until the user interrupts,
+ * exactly the #936 class of failure. We apply a bounded default here — kept
+ * generous so most test suites/builds still fit — while long builds can pass
+ * an explicit per-call `timeout`. Tunable via CONTEXT_MODE_PI_EXEC_TIMEOUT_MS.
+ */
+export const PI_DEFAULT_EXEC_TIMEOUT_MS = 600_000;
 export function resolveExecTimeout(timeout: number | undefined): number | undefined {
+  // Explicit per-call timeout always wins, on any host.
   if (timeout !== undefined) return timeout;
-  // Only agy gets a default — every other host enforces its own RPC timeout, so
-  // keep the unbounded behavior there. Detected via the env the agy bundle pins
-  // (CONTEXT_MODE_PLATFORM=antigravity-cli). Tunable via CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS.
-  if (detectPlatform().platform !== "antigravity-cli") return undefined;
-  const override = Number(process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS);
-  return Number.isFinite(override) && override > 0 ? override : AGY_DEFAULT_EXEC_TIMEOUT_MS;
+
+  // Generic override — force a server-side default on ANY host when set.
+  // (CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS.)
+  const generic = Number(process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS);
+  if (Number.isFinite(generic) && generic > 0) return generic;
+
+  const platform = detectPlatform().platform;
+
+  // agy does not enforce an MCP RPC timeout, so apply a bounded default.
+  // Detected via the env the agy bundle pins (CONTEXT_MODE_PLATFORM=antigravity-cli).
+  // Tunable via CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS.
+  if (platform === "antigravity-cli") {
+    const override = Number(process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS);
+    return Number.isFinite(override) && override > 0 ? override : AGY_DEFAULT_EXEC_TIMEOUT_MS;
+  }
+
+  // Claude Code's host RPC timeout is near-infinite for interactive users and
+  // stdio servers were exempt from idle timeouts before v2.1.203, so an
+  // unbounded default hangs the agent (Issue #936). Apply a bounded default.
+  // Tunable via CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS.
+  if (platform === "claude-code") {
+    const override = Number(process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS);
+    return Number.isFinite(override) && override > 0
+      ? override
+      : CLAUDE_DEFAULT_EXEC_TIMEOUT_MS;
+  }
+
+  // Pi's MCP bridge sets an INFINITE transport timeout for tools/call
+  // (Issue #643) and defers bounding to manual "Pi cancel", so an unbounded
+  // default can hang the agent until the user interrupts (#936 class). Apply a
+  // bounded default. Tunable via CONTEXT_MODE_PI_EXEC_TIMEOUT_MS.
+  if (platform === "pi") {
+    const override = Number(process.env.CONTEXT_MODE_PI_EXEC_TIMEOUT_MS);
+    return Number.isFinite(override) && override > 0
+      ? override
+      : PI_DEFAULT_EXEC_TIMEOUT_MS;
+  }
+
+  // Every other host enforces its own RPC timeout — keep unbounded behavior
+  // there (Issue #406 — long builds need an unbounded run).
+  return undefined;
 }
 
 /**
@@ -1714,7 +1773,7 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
       timeout: z
         .coerce.number()
         .optional()
-        .describe("Max execution time in ms. When omitted, no server-side timer fires — the MCP host's RPC timeout governs (which is the right layer for this policy). Pass an explicit value for long-running builds (Gradle/Maven/SBT)."),
+        .describe("Max execution time in ms. When omitted, a bounded default applies under Antigravity CLI, Claude Code, and Pi (whose host RPC timeouts are near-infinite; see Issue #936) — tunable via CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS / CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS / CONTEXT_MODE_PI_EXEC_TIMEOUT_MS / CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS. On other hosts the MCP host's RPC timeout governs. Pass an explicit value for long-running builds (Gradle/Maven/SBT)."),
       // background: wrapped in coerceBoolean preprocessor so the literal
       // strings "true"/"false" arriving from OpenCode's native plugin
       // bridge (and several LLM providers' tool-call JSON) parse as the
@@ -2101,7 +2160,7 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
       timeout: z
         .coerce.number()
         .optional()
-        .describe("Max execution time in ms. When omitted, no server-side timer fires — the MCP host's RPC timeout governs."),
+        .describe("Max execution time in ms. When omitted, a bounded default applies under Antigravity CLI, Claude Code, and Pi (Issue #936); on other hosts the MCP host's RPC timeout governs."),
       intent: z
         .string()
         .optional()
@@ -3742,7 +3801,7 @@ EXAMPLE: ctx_batch_execute(
       timeout: z
         .coerce.number()
         .optional()
-        .describe("Max execution time in ms. When omitted, no server-side timer fires — the MCP host's RPC timeout governs. With concurrency=1, the value (when set) is a shared budget across commands; with concurrency>1, it is applied per-command."),
+        .describe("Max execution time in ms. When omitted, a bounded default applies under Antigravity CLI, Claude Code, and Pi (Issue #936); on other hosts the MCP host's RPC timeout governs. With concurrency=1, the value (when set) is a shared budget across commands; with concurrency>1, it is applied per-command."),
       concurrency: z
         .coerce.number()
         .int()
