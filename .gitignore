@@ -5,6 +5,8 @@ packages/*/dist/
 .DS_Store
 /tmp/
 tmp.*/
+# Stray artifacts written into cwd by the executor "Temp Cleanup Resilience" test
+/f*.tmp
 *.db
 server.bundle.mjs
 cli.bundle.mjs
