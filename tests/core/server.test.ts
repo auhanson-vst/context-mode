@@ -44,7 +44,7 @@ import {
   StorageDirectoryError,
 } from "../../src/session/db.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
-import { sanitizeSchemaForStrictClients, resolveExecTimeout, AGY_DEFAULT_EXEC_TIMEOUT_MS, REGISTERED_CTX_TOOLS } from "../../src/server.js";
+import { sanitizeSchemaForStrictClients, resolveExecTimeout, AGY_DEFAULT_EXEC_TIMEOUT_MS, CLAUDE_DEFAULT_EXEC_TIMEOUT_MS, REGISTERED_CTX_TOOLS } from "../../src/server.js";
 import { stripJsonComments, parseJsonc } from "../../src/util/jsonc.js";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -6628,11 +6628,17 @@ describe("parseJsonc / stripJsonComments (src/util/jsonc)", () => {
 describe("resolveExecTimeout (agy default execution timeout)", () => {
   const savedPlatform = process.env.CONTEXT_MODE_PLATFORM;
   const savedOverride = process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS;
+  const savedClaude = process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS;
+  const savedGeneric = process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
   afterEach(() => {
     if (savedPlatform === undefined) delete process.env.CONTEXT_MODE_PLATFORM;
     else process.env.CONTEXT_MODE_PLATFORM = savedPlatform;
     if (savedOverride === undefined) delete process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS;
     else process.env.CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS = savedOverride;
+    if (savedClaude === undefined) delete process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS;
+    else process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS = savedClaude;
+    if (savedGeneric === undefined) delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
+    else process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS = savedGeneric;
   });
 
   test("passes an explicit timeout through on any platform", () => {
@@ -6648,9 +6654,29 @@ describe("resolveExecTimeout (agy default execution timeout)", () => {
     expect(resolveExecTimeout(undefined)).toBe(AGY_DEFAULT_EXEC_TIMEOUT_MS);
   });
 
-  test("leaves the timeout unbounded (undefined) on non-agy hosts", () => {
+  test("applies the claude-code default under claude-code when no timeout is given (#936)", () => {
     process.env.CONTEXT_MODE_PLATFORM = "claude-code";
+    delete process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS;
+    delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
+    expect(resolveExecTimeout(undefined)).toBe(CLAUDE_DEFAULT_EXEC_TIMEOUT_MS);
+  });
+
+  test("honors CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS override under claude-code (#936)", () => {
+    process.env.CONTEXT_MODE_PLATFORM = "claude-code";
+    process.env.CONTEXT_MODE_CLAUDE_EXEC_TIMEOUT_MS = "1500";
+    expect(resolveExecTimeout(undefined)).toBe(1500);
+  });
+
+  test("leaves the timeout unbounded (undefined) on other hosts", () => {
+    process.env.CONTEXT_MODE_PLATFORM = "pi";
+    delete process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS;
     expect(resolveExecTimeout(undefined)).toBeUndefined();
+  });
+
+  test("honors the generic CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS override on any host (#936)", () => {
+    process.env.CONTEXT_MODE_PLATFORM = "pi";
+    process.env.CONTEXT_MODE_DEFAULT_EXEC_TIMEOUT_MS = "2500";
+    expect(resolveExecTimeout(undefined)).toBe(2500);
   });
 
   test("honors CONTEXT_MODE_AGY_EXEC_TIMEOUT_MS override under agy", () => {
